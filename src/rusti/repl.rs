@@ -22,7 +22,7 @@ use syntax::visit::{self, FnKind};
 use exec::ExecutionEngine;
 use input::{parse_command, parse_program};
 use input::{FileReader, Input, InputReader};
-use input::InputResult::{Command, Program, Empty, More, Eof, InputError};
+use input::InputResult::{Command, Empty, Eof, InputError, More, Program};
 
 /// Starting prompt
 const DEFAULT_PROMPT: &'static str = "rusti=> ";
@@ -59,21 +59,36 @@ pub struct CommandDef {
 
 /// List of commands
 static COMMANDS: &'static [CommandDef] = &[
-    CommandDef{name: "block", args: None,
+    CommandDef {
+        name: "block",
+        args: None,
         accepts: CmdArgs::Nothing,
-        help: "Run a multi-line block of code, terminated by `.`"},
-    CommandDef{name: "help", args: Some("[command]"),
+        help: "Run a multi-line block of code, terminated by `.`",
+    },
+    CommandDef {
+        name: "help",
+        args: Some("[command]"),
         accepts: CmdArgs::Text,
-        help: "Show help for commands"},
-    CommandDef{name: "load", args: Some("<filename>"),
+        help: "Show help for commands",
+    },
+    CommandDef {
+        name: "load",
+        args: Some("<filename>"),
         accepts: CmdArgs::Filename,
-        help: "Evaluate a file's contents as input"},
-    CommandDef{name: "print", args: Some("<expr>"),
+        help: "Evaluate a file's contents as input",
+    },
+    CommandDef {
+        name: "print",
+        args: Some("<expr>"),
         accepts: CmdArgs::Expr,
-        help: "Print expression using fmt::Display"},
-    CommandDef{name: "type", args: Some("<expr>"),
+        help: "Print expression using fmt::Display",
+    },
+    CommandDef {
+        name: "type",
+        args: Some("<expr>"),
         accepts: CmdArgs::Expr,
-        help: "Show the type of expr"},
+        help: "Show the type of expr",
+    },
 ];
 
 /// Executes input code and maintains state of persistent items.
@@ -106,7 +121,9 @@ pub fn lookup_command(name: &str) -> Option<&'static CommandDef> {
 
 /// Calls the given closure for each command whose name begins with `prefix`.
 pub fn search_command<F>(prefix: &str, mut f: F)
-        where F: FnMut(&'static CommandDef) {
+where
+    F: FnMut(&'static CommandDef),
+{
     for cmd in COMMANDS {
         if cmd.name.starts_with(prefix) {
             f(cmd);
@@ -122,10 +139,9 @@ impl Repl {
 
     /// Constructs a new `Repl` with additional library lookup paths.
     pub fn new_with_libs(libs: Vec<String>, sysroot: Option<PathBuf>) -> Repl {
-        let argv0 = args().next()
-            .unwrap_or_else(|| "rusti".to_owned());
+        let argv0 = args().next().unwrap_or_else(|| "rusti".to_owned());
 
-        Repl{
+        Repl {
             argv0: argv0,
             engine: ExecutionEngine::new(libs, sysroot),
             attributes: Vec::new(),
@@ -161,15 +177,17 @@ impl Repl {
 
                     more = false;
                     self.handle_command(name, args);
-                },
+                }
                 Program(input) => {
                     debug!("read program: {:?}", input);
 
                     more = false;
                     self.handle_input(input, false);
-                },
+                }
                 Empty => (),
-                More => { more = true; },
+                More => {
+                    more = true;
+                }
                 Eof => {
                     if input.is_tty() {
                         println!("");
@@ -181,7 +199,7 @@ impl Repl {
                         println!("{}", err);
                     }
                     more = false;
-                },
+                }
             };
         }
     }
@@ -191,7 +209,7 @@ impl Repl {
         match parse_command(cmd, false) {
             Command(name, args) => self.handle_command(name, args),
             InputError(Some(err)) => println!("{}", err),
-            _ => ()
+            _ => (),
         }
     }
 
@@ -201,8 +219,7 @@ impl Repl {
         let f = match File::open(path) {
             Ok(f) => f,
             Err(e) => {
-                println!("{}: failed to open {}: {}",
-                    self.argv0, path.display(), e);
+                println!("{}: failed to open {}: {}", self.argv0, path.display(), e);
                 return false;
             }
         };
@@ -211,8 +228,10 @@ impl Repl {
 
         loop {
             if self.read_block {
-                println!("{}: `.block` command is not necessary when running a file",
-                    self.argv0);
+                println!(
+                    "{}: `.block` command is not necessary when running a file",
+                    self.argv0
+                );
                 return false;
             }
 
@@ -239,28 +258,31 @@ impl Repl {
     /// `input` will be ignored.
     fn build_program(&self, input: Option<&Input>, program: &str) -> String {
         let (attrs, vitems, items) = if let Some(input) = input {
-            let attrs = self.attributes.iter().map(|s| &s[..])
+            let attrs = self.attributes
+                .iter()
+                .map(|s| &s[..])
                 .chain(input.attributes.iter().map(|s| &s[..]))
                 .collect::<Vec<_>>();
 
-            let vitems = self.view_items.iter().map(|s| &s[..])
+            let vitems = self.view_items
+                .iter()
+                .map(|s| &s[..])
                 .chain(input.view_items.iter().map(|s| &s[..]))
                 .collect::<Vec<_>>();
 
-            let items = self.items.iter().map(|s| &s[..])
+            let items = self.items
+                .iter()
+                .map(|s| &s[..])
                 .chain(input.items.iter().map(|s| &s[..]))
                 .collect::<Vec<_>>();
 
             (attrs, vitems, items)
         } else {
-            let attrs = self.attributes.iter().map(|s| &s[..])
-                .collect::<Vec<_>>();
+            let attrs = self.attributes.iter().map(|s| &s[..]).collect::<Vec<_>>();
 
-            let vitems = self.view_items.iter().map(|s| &s[..])
-                .collect::<Vec<_>>();
+            let vitems = self.view_items.iter().map(|s| &s[..]).collect::<Vec<_>>();
 
-            let items = self.items.iter().map(|s| &s[..])
-                .collect::<Vec<_>>();
+            let items = self.items.iter().map(|s| &s[..]).collect::<Vec<_>>();
 
             (attrs, vitems, items)
         };
@@ -270,16 +292,17 @@ impl Repl {
         let items = items.join("\n");
 
         format!(
-r#"#![allow(dead_code, unused_imports, unused_features)]
+            r#"#![allow(dead_code, unused_imports, unused_features)]
 {attrs}
 {vitems}
 {items}
 {program}
-"#
-        , attrs = attrs
-        , vitems = vitems
-        , items = items
-        , program = program)
+"#,
+            attrs = attrs,
+            vitems = vitems,
+            items = items,
+            program = program
+        )
     }
 
     /// Runs a single command input.
@@ -287,7 +310,7 @@ r#"#![allow(dead_code, unused_imports, unused_features)]
         match lookup_command(&cmd).map(|c| c.name) {
             Some("block") => {
                 self.read_block = true;
-            },
+            }
             Some("help") => {
                 self.help_command(args.as_ref().map(|s| &s[..]));
             }
@@ -305,13 +328,13 @@ r#"#![allow(dead_code, unused_imports, unused_features)]
                     println!("command `print` expects an expression");
                 }
             }
-            Some("type") => {
+            /*Some("type") => {
                 if let Some(args) = args {
                     self.type_command(args);
                 } else {
                     println!("command `type` expects an expression");
                 }
-            },
+            },*/
             _ => println!("unrecognized command `{}`", cmd),
         }
     }
@@ -333,9 +356,10 @@ r#"#![allow(dead_code, unused_imports, unused_features)]
 
         let stmts = input.statements.join("\n");
 
-        let prog = self.build_program(Some(&input),
+        let prog = self.build_program(
+            Some(&input),
             &format!(
-r#"
+                r#"
 #[no_mangle]
 pub fn {name}() {{
     let _ = std::panic::catch_unwind(_rusti_inner);
@@ -344,10 +368,10 @@ pub fn {name}() {{
 fn _rusti_inner() {{
 {stmts}
 }}
-"#
-            , name = name
-            , stmts = stmts
-            )
+"#,
+                name = name,
+                stmts = stmts
+            ),
         );
 
         if let Some(_) = self.engine.add_module(prog) {
@@ -390,8 +414,9 @@ fn _rusti_inner() {{
             for cmd in COMMANDS {
                 match cmd.args {
                     None => println!("  {:<16} {}", cmd.name, cmd.help),
-                    Some(args) => println!("  {:<16} {}",
-                        format!("{} {}", cmd.name, args), cmd.help)
+                    Some(args) => {
+                        println!("  {:<16} {}", format!("{} {}", cmd.name, args), cmd.help)
+                    }
                 }
             }
 
@@ -405,7 +430,7 @@ fn _rusti_inner() {{
         }
     }
 
-    fn expr_type(&self, fn_name: &str, prog: String) -> Option<String> {
+    /*fn expr_type(&self, fn_name: &str, prog: String) -> Option<String> {
         let fn_name = fn_name.to_owned();
 
         self.engine.with_analysis(prog, move |krate, tcx, _analysis| {
@@ -441,19 +466,19 @@ fn {name}() {{
         if let Some(t) = self.expr_type(name, prog) {
             println!("{} = {}", expr, t);
         }
-    }
+    }*/
 }
 
-struct ExprType<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
+/*struct ExprType<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     fn_name: String,
     result: Option<String>,
     ty_cx: &'a ty::TyCtxt<'a, 'gcx, 'tcx>,
 }
 
-impl<'a, 'gcx, 'tcx> visit::Visitor for ExprType<'a, 'gcx, 'tcx> {
+impl<'a, 'gcx, 'tcx> visit::Visitor<'a> for ExprType<'a, 'gcx, 'tcx> {
     fn visit_fn(&mut self, fk: visit::FnKind, _fd: &ast::FnDecl,
-            b: &ast::Block, _s: codemap::Span, _n: ast::NodeId) {
-        if let FnKind::ItemFn(ident, _, _, _, _, _) = fk {
+            _s: codemap::Span, _n: ast::NodeId) {
+        if let FnKind::ItemFn(ident, _, _, _, _, b) = fk {
             if &*ident.name.as_str() == self.fn_name {
                 if let Some(ref stmt) = b.stmts.last() {
                     if let StmtKind::Semi(ref expr) = stmt.node {
@@ -466,4 +491,4 @@ impl<'a, 'gcx, 'tcx> visit::Visitor for ExprType<'a, 'gcx, 'tcx> {
             }
         }
     }
-}
+}*/

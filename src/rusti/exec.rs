@@ -28,17 +28,17 @@ use rustc::middle::cstore::LinkagePreference::RequireDynamic;
 use rustc::ty;
 use rustc::session::build_session;
 use rustc::session::config::{self, basic_options, build_configuration,
-    ErrorOutputType, Input, Options, OptLevel};
+    ErrorOutputType, Input, Options, OptLevel, OutputFilenames};
 use rustc_driver::driver;
 use rustc_metadata::cstore::CStore;
 use rustc_resolve::MakeGlobMap;
 use rustc_trans::ModuleSource;
+use rustc_plugin::registry::Registry as PluginRegistry;
 
 use syntax::ast::Crate;
-use syntax::codemap::MultiSpan;
+use syntax::codemap::{MultiSpan, FileName};
 use syntax::errors;
 use syntax::errors::emitter::EmitterWriter;
-use syntax::errors::snippet::FormatMode;
 use syntax::errors::registry::Registry;
 use syntax::feature_gate::UnstableFeatures;
 
@@ -65,7 +65,7 @@ impl<'a> IntoInput for &'a str {
 impl IntoInput for String {
     fn into_input(self) -> Input {
         Input::Str{
-            name: "<input>".to_owned(),
+            name: FileName::Custom("<input>".to_owned()),
             input: self,
         }
     }
@@ -306,18 +306,28 @@ impl Write for SyncBuf {
 fn compile_input(input: Input, sysroot: PathBuf, libs: Vec<String>)
         -> Option<(llvm::ModuleRef, Deps)> {
     let r = monitor(move || {
+        let compile_controller = ::rustc_driver::driver::CompileController::basic();
+        let mut args = Vec::new();
+        for arg in ::std::env::args_os() {
+            args.push(arg.to_string_lossy().to_string());
+        }
+        let matches = match ::rustc_driver::handle_options(&args) {
+            Some(matches) => matches,
+            None => return None,
+        };
+        let (sopts, cfg) = config::build_session_options_and_crate_config(&matches);
         let opts = build_exec_options(sysroot, libs);
-        let dep_graph = DepGraph::new(opts.build_dep_graph());
-        let cstore = Rc::new(CStore::new(&dep_graph));
-        let sess = build_session(opts, &dep_graph, None,
-            Registry::new(&rustc::DIAGNOSTICS), cstore.clone());
+        let sess = build_session(opts, None, Registry::new(&rustc::DIAGNOSTICS));
+        let trans = ::rustc_driver::get_trans(&sess);
+        let dep_graph = DepGraph::new_disabled();
+        let cstore = Rc::new(CStore::new(trans.metadata_loader()));
         rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
-        let cfg = build_configuration(&sess);
+        let cfg = build_configuration(&sess, cfg);
 
         let id = "repl";
 
-        let krate = match driver::phase_1_parse_input(&sess, cfg, &input) {
+        let krate = match driver::phase_1_parse_input(&compile_controller, &sess, &input) {
             Ok(krate) => krate,
             Err(mut e) => {
                 e.emit();
@@ -325,21 +335,34 @@ fn compile_input(input: Input, sysroot: PathBuf, libs: Vec<String>)
             }
         };
 
-        check_compile(|| {
-            let driver::ExpansionResult{defs, analysis, resolutions, mut hir_forest, ..} =
-                try!(driver::phase_2_configure_and_expand(
-                    &sess, &cstore, krate, id, None, MakeGlobMap::No, |_| Ok(())));
+        let driver::ExpansionResult{defs, analysis, resolutions, mut hir_forest,
+                expanded_crate: krate} =
+            match driver::phase_2_configure_and_expand(
+                &sess, &cstore, krate, Some(<PluginRegistry>::new(&sess, krate.span)), id, None, MakeGlobMap::No, |_| Ok(())) {
+                Ok(res) => res,
+                Err(_) => return None,
+            };
 
-            let arenas = ty::CtxtArenas::new();
-            let ast_map = ast_map::map_crate(&mut hir_forest, defs);
+        let arenas = ty::AllArenas::new();
+        let outputs = OutputFilenames {
+            out_directory: PathBuf::new(),
+            out_filestem: "".to_string(),
+            single_output_file: None,
+            extra: sess.opts.cg.extra_filename.clone(),
+            outputs: sess.opts.output_types.clone(),
+        };
+        let ast_map = ast_map::map_crate(&sess, &*cstore, &mut hir_forest, &defs);
 
-            driver::phase_3_run_analysis_passes(
-                &sess, ast_map, analysis, resolutions, &arenas, id,
-                |tcx, mir_map, analysis, _| {
+        driver::phase_3_run_analysis_passes(
+            &*trans, &compile_controller,
+            &sess, &*cstore, ast_map, analysis, resolutions, &arenas, id, &outputs,
+                |tcx, analysis, rx, _| {
                     tcx.sess.abort_if_errors();
 
-                    let trans = driver::phase_4_translate_to_llvm(
-                        tcx, mir_map.expect("mir_map is None"), analysis);
+                    let ongoing_trans = driver::phase_4_translate_to_llvm(
+                        &*trans,
+                        tcx,
+                        rx);
 
                     tcx.sess.abort_if_errors();
 
@@ -350,8 +373,8 @@ fn compile_input(input: Input, sysroot: PathBuf, libs: Vec<String>)
                     let deps = crates.into_iter().rev()
                         .filter_map(|(_, p)| p).collect();
 
-                    assert_eq!(trans.modules.len(), 1);
-                    let llmod = match trans.modules[0].source {
+                    assert_eq!(ongoing_trans.modules.len(), 1);
+                    let llmod = match ongoing_trans.modules[0].source {
                         ModuleSource::Translated(ref ll) => ll.llmod,
                         _ => panic!("translation contains no LLVM module")
                     };
@@ -360,10 +383,10 @@ fn compile_input(input: Input, sysroot: PathBuf, libs: Vec<String>)
                     let modp = llmod as usize;
 
                     (modp, deps)
-                })
-        })
+                }).ok()
     });
 
+    let r: Option<_> = r;
     r.and_then(|r| r).map(|(modp, deps)| (modp as llvm::ModuleRef, deps))
 }
 
@@ -373,18 +396,28 @@ fn with_analysis<F, R>(f: F, input: Input, sysroot: PathBuf, libs: Vec<String>) 
         where F: Send + 'static, R: Send + 'static,
         F: for<'a, 'gcx, 'tcx> FnOnce(&Crate, &ty::TyCtxt<'a, 'gcx, 'tcx>, ty::CrateAnalysis) -> R {
     monitor(move || {
+        let compile_controller = ::rustc_driver::driver::CompileController::basic();
+        let mut args = Vec::new();
+        for arg in ::std::env::args_os() {
+            args.push(arg.to_string_lossy().to_string());
+        }
+        let matches = match ::rustc_driver::handle_options(&args) {
+            Some(matches) => matches,
+            None => return None,
+        };
+        let (sopts, cfg) = config::build_session_options_and_crate_config(&matches);
         let opts = build_exec_options(sysroot, libs);
-        let dep_graph = DepGraph::new(opts.build_dep_graph());
-        let cstore = Rc::new(CStore::new(&dep_graph));
-        let sess = build_session(opts, &dep_graph, None,
-            Registry::new(&rustc::DIAGNOSTICS), cstore.clone());
+        let sess = build_session(opts, None, Registry::new(&rustc::DIAGNOSTICS));
+        let trans = ::rustc_driver::get_trans(&sess);
+        let dep_graph = DepGraph::new_disabled();
+        let cstore = Rc::new(CStore::new(trans.metadata_loader()));
         rustc_lint::register_builtins(&mut sess.lint_store.borrow_mut(), Some(&sess));
 
-        let cfg = build_configuration(&sess);
+        let cfg = build_configuration(&sess, cfg);
 
         let id = "repl";
 
-        let krate = match driver::phase_1_parse_input(&sess, cfg, &input) {
+        let krate = match driver::phase_1_parse_input(&compile_controller, &sess, &input) {
             Ok(krate) => krate,
             Err(mut e) => {
                 e.emit();
@@ -392,22 +425,32 @@ fn with_analysis<F, R>(f: F, input: Input, sysroot: PathBuf, libs: Vec<String>) 
             }
         };
 
-        check_compile(|| {
-            let driver::ExpansionResult{defs, analysis, resolutions, mut hir_forest,
-                    expanded_crate: krate} =
-                try!(driver::phase_2_configure_and_expand(
-                    &sess, &cstore, krate, id, None, MakeGlobMap::No, |_| Ok(())));
+        let driver::ExpansionResult{defs, analysis, resolutions, mut hir_forest,
+                expanded_crate: krate} =
+            match driver::phase_2_configure_and_expand(
+                &sess, &cstore, krate, Some(<PluginRegistry>::new(&sess, krate.span)), id, None, MakeGlobMap::No, |_| Ok(())) {
+                Ok(res) => res,
+                Err(_) => return None,
+            };
 
-            let arenas = ty::CtxtArenas::new();
-            let ast_map = ast_map::map_crate(&mut hir_forest, defs);
+        let arenas = ty::AllArenas::new();
+        let outputs = OutputFilenames {
+            out_directory: PathBuf::new(),
+            out_filestem: "".to_string(),
+            single_output_file: None,
+            extra: sess.opts.cg.extra_filename.clone(),
+            outputs: sess.opts.output_types.clone(),
+        };
+        let ast_map = ast_map::map_crate(&sess, &*cstore, &mut hir_forest, &defs);
 
-            driver::phase_3_run_analysis_passes(
-                &sess, ast_map, analysis, resolutions, &arenas, id,
-                    |tcx, _mir_map, analysis, _| {
-                        let _ignore = tcx.dep_graph.in_ignore();
+        driver::phase_3_run_analysis_passes(
+            &*trans, &compile_controller,
+            &sess, &*cstore, ast_map, analysis, resolutions, &arenas, id, &outputs,
+                |tcx, analysis, _, _| {
+                    tcx.dep_graph.with_ignore(|| {
                         f(&krate, &tcx, analysis)
                     })
-        })
+                }).ok()
     }).and_then(|r| r)
 }
 
@@ -423,7 +466,7 @@ fn monitor<F, R>(f: F) -> Option<R>
 
     let handle = thread.spawn(move || {
         if !log_enabled!(::log::LogLevel::Debug) {
-            io::set_panic(Box::new(sink));
+            io::set_panic(Some(Box::new(sink)));
         }
         f()
     }).unwrap();
@@ -441,7 +484,7 @@ fn handle_compiler_panic(e: Box<Any + Send + 'static>, data: Arc<Mutex<Vec<u8>>>
     if !e.is::<errors::FatalError>() {
         if !e.is::<errors::ExplicitBug>() {
             let emitter = EmitterWriter::stderr(errors::ColorConfig::Auto,
-                None, None, FormatMode::NewErrorFormat);
+                None, true, false);
 
             let handler = errors::Handler::with_emitter(
                 true, false, Box::new(emitter));

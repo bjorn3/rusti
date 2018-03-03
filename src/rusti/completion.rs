@@ -23,10 +23,16 @@ use repl::{lookup_command, search_command, CmdArgs};
 pub struct Completer;
 
 impl<Term: Terminal> linefeed::Completer<Term> for Completer {
-    fn complete(&self, _word: &str, reader: &Reader<Term>,
-            start: usize, end: usize) -> Option<Vec<Completion>> {
+    fn complete(
+        &self,
+        _word: &str,
+        reader: &Reader<Term>,
+        start: usize,
+        end: usize,
+    ) -> Option<Vec<Completion>> {
         let is_whitespace = reader.buffer()[..start]
-            .chars().all(|ch| ch.is_whitespace());
+            .chars()
+            .all(|ch| ch.is_whitespace());
 
         if is_whitespace && start == end {
             // Indent when there's no word to complete
@@ -65,7 +71,7 @@ pub fn complete(text: &str, end: usize) -> Option<Vec<Completion>> {
 
             let accepts = match lookup_command(name) {
                 Some(cmd) => cmd.accepts,
-                None => return None
+                None => return None,
             };
 
             let args = words.next().map(|s| s.trim_left());
@@ -73,18 +79,19 @@ pub fn complete(text: &str, end: usize) -> Option<Vec<Completion>> {
             match accepts {
                 CmdArgs::Expr => args.and_then(|arg| complete_code(arg, arg.len())),
                 CmdArgs::Filename => Some(complete_path(args.unwrap_or(""))),
-                _ => None
+                _ => None,
             }
         } else {
             // Complete command name
             let mut names = Vec::new();
 
-            search_command(&line[1..],
-                |cmd| names.push(Completion{
+            search_command(&line[1..], |cmd| {
+                names.push(Completion {
                     completion: cmd.name.to_owned(),
                     display: None,
                     suffix: Suffix::Some(' '),
-                }));
+                })
+            });
 
             if names.is_empty() {
                 None
@@ -103,8 +110,12 @@ fn complete_code(text: &str, end: usize) -> Option<Vec<Completion>> {
     file.write_all(text.as_bytes()).unwrap();
     file.write_all(b"\n").unwrap();
 
-    let result = Command::new("racer").arg("complete").arg("1")
-        .arg(format!("{}", end)).arg(file.path()).output();
+    let result = Command::new("racer")
+        .arg("complete")
+        .arg("1")
+        .arg(format!("{}", end))
+        .arg(file.path())
+        .output();
 
     if let Err(e) = result {
         warn!("error: couldn't invoke racer: {:?}", e);
@@ -122,7 +133,7 @@ fn complete_code(text: &str, end: usize) -> Option<Vec<Completion>> {
         let (restype, rest) = {
             match line.find(' ') {
                 Some(pos) => (&line[..pos], &line[pos + 1..]),
-                None => (line, "")
+                None => (line, ""),
             }
         };
 
@@ -152,7 +163,7 @@ fn complete_code(text: &str, end: usize) -> Option<Vec<Completion>> {
                 let suffix = match mtype {
                     "Crate" | "Module" => Some("::"),
                     "Function" => Some("("),
-                    _ => None
+                    _ => None,
                 };
 
                 if let Some(suffix) = suffix {
@@ -161,14 +172,14 @@ fn complete_code(text: &str, end: usize) -> Option<Vec<Completion>> {
                 }
 
                 debug!("completion: {:?}", name);
-                completions.push(Completion{
+                completions.push(Completion {
                     completion: name,
                     display: display,
                     suffix: Suffix::None,
                 });
             }
             "END" => break,
-            _ => warn!("unexpected racer command: {:?}", line)
+            _ => warn!("unexpected racer command: {:?}", line),
         }
     }
 

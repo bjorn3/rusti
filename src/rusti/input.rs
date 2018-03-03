@@ -20,15 +20,15 @@ use std::sync::mpsc::channel;
 use std::thread::Builder;
 
 use syntax::ast::{ItemKind, MacStmtStyle, StmtKind};
-use syntax::codemap::{BytePos, CodeMap};
+use syntax::codemap::{BytePos, CodeMap, FileName, FilePathMapping};
+use syntax::errors;
 use syntax::errors::{ColorConfig, DiagnosticBuilder, Handler};
 use syntax::errors::emitter::{Emitter, EmitterWriter};
-use syntax::errors::snippet::FormatMode;
 use syntax::errors::Level::*;
 use syntax::parse::{classify, token};
 use syntax::parse::{filemap_to_parser, ParseSess};
 
-use linefeed::{Reader, ReadResult};
+use linefeed::{ReadResult, Reader};
 use linefeed::terminal::DefaultTerminal;
 
 use completion::Completer;
@@ -44,7 +44,7 @@ pub struct FileReader {
 
 impl FileReader {
     pub fn new(f: File, path: PathBuf) -> FileReader {
-        FileReader{
+        FileReader {
             reader: BufReader::new(f),
             path: path,
             buffer: String::new(),
@@ -76,8 +76,7 @@ impl FileReader {
         }
 
         if !buf.is_empty() {
-            parse_program(&buf, false,
-                self.path.as_os_str().to_str())
+            parse_program(&buf, false, self.path.as_os_str().to_str())
         } else {
             Eof
         }
@@ -109,10 +108,10 @@ impl InputReader {
                 r.set_word_break_chars(" \t\n!\"#$%&'()*+,-./:;<=>?@[\\]^`");
                 Some(r)
             }
-            Err(_) => None
+            Err(_) => None,
         };
 
-        InputReader{
+        InputReader {
             buffer: String::new(),
             reader: r,
         }
@@ -204,7 +203,7 @@ impl InputReader {
 
                 r.read_line().ok().unwrap_or(ReadResult::Eof)
             }
-            None => self.read_stdin()
+            None => self.read_stdin(),
         }
     }
 
@@ -213,7 +212,7 @@ impl InputReader {
 
         match stdin().read_line(&mut s) {
             Ok(0) | Err(_) => ReadResult::Eof,
-            Ok(_) => ReadResult::Input(s)
+            Ok(_) => ReadResult::Input(s),
         }
     }
 
@@ -267,7 +266,7 @@ pub struct Input {
 
 impl Input {
     pub fn new() -> Input {
-        Input{
+        Input {
             attributes: Vec::new(),
             view_items: Vec::new(),
             items: Vec::new(),
@@ -278,8 +277,8 @@ impl Input {
 }
 
 pub fn is_command(line: &str) -> bool {
-    (line.starts_with(".") && !line.starts_with("..")) ||
-        (line.starts_with(":") && !line.starts_with("::"))
+    (line.starts_with(".") && !line.starts_with(".."))
+        || (line.starts_with(":") && !line.starts_with("::"))
 }
 
 /// Parses a line of input as a command.
@@ -300,17 +299,20 @@ pub fn parse_command(line: &str, filter: bool) -> InputResult {
 
     let cmd = match lookup_command(name) {
         Some(cmd) => cmd,
-        None => return InputError(Some(Owned(
-            format!("unrecognized command: {}", name))))
+        None => return InputError(Some(Owned(format!("unrecognized command: {}", name)))),
     };
 
     let args = words.next();
 
     match cmd.accepts {
-        CmdArgs::Nothing if args.is_some() => InputError(
-            Some(Owned(format!("command `{}` takes no arguments", cmd.name)))),
-        CmdArgs::Expr if args.is_none() => InputError(
-            Some(Owned(format!("command `{}` expects an expression", cmd.name)))),
+        CmdArgs::Nothing if args.is_some() => InputError(Some(Owned(format!(
+            "command `{}` takes no arguments",
+            cmd.name
+        )))),
+        CmdArgs::Expr if args.is_none() => InputError(Some(Owned(format!(
+            "command `{}` expects an expression",
+            cmd.name
+        )))),
         CmdArgs::Expr => {
             let args = args.unwrap();
             match parse_program(args, filter, None) {
@@ -318,7 +320,7 @@ pub fn parse_command(line: &str, filter: bool) -> InputResult {
                 i => i,
             }
         }
-        _ => Command(name.to_owned(), args.map(|s| s.to_owned()))
+        _ => Command(name.to_owned(), args.map(|s| s.to_owned())),
     }
 }
 
@@ -350,7 +352,7 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
     // into strings. Instead, to preserve user input formatting, we use
     // byte offsets to return the input as it was received.
     fn slice(s: &str, lo: BytePos, hi: BytePos) -> String {
-        s[lo.0 as usize .. hi.0 as usize].to_owned()
+        s[lo.0 as usize..hi.0 as usize].to_owned()
     }
 
     let code = code.to_owned();
@@ -359,17 +361,22 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
 
     let handle = task.spawn(move || {
         if !log_enabled!(::log::LogLevel::Debug) {
-            io::set_panic(Box::new(io::sink()));
+            io::set_panic(Some(Box::new(io::sink())));
         }
         let mut input = Input::new();
-        let cm = Rc::new(CodeMap::new());
-        let handler = Handler::with_emitter(false, false,
-            Box::new(ErrorEmitter::new(cm.clone(), em_err.clone(), filter)));
+        let cm = Rc::new(CodeMap::new(FilePathMapping::empty()));
+        let handler = Handler::with_emitter(
+            false,
+            false,
+            Box::new(ErrorEmitter::new(cm.clone(), em_err.clone(), filter)),
+        );
         let sess = ParseSess::with_span_handler(handler, cm);
 
-        let mut p = filemap_to_parser(&sess,
-            sess.codemap().new_filemap(filename, None, code.clone()),
-            Vec::new());
+        let mut p = filemap_to_parser(
+            &sess,
+            sess.codemap()
+                .new_filemap(FileName::Real(filename.into()), code.clone()),
+        );
 
         // Whether the last statement is an expression without a semicolon
         let mut last_expr = false;
@@ -380,12 +387,12 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
                 continue;
             }
 
-            let lo = p.span.lo;
+            let lo = p.span.lo();
 
             if p.token == token::Pound {
                 if p.look_ahead(1, |t| *t == token::Not) {
                     try_parse!(p.parse_attribute(true));
-                    input.attributes.push(slice(&code, lo, p.last_span.hi));
+                    input.attributes.push(slice(&code, lo, p.prev_span.hi()));
                     continue;
                 }
             }
@@ -424,28 +431,24 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
                 StmtKind::Item(_) => {
                     // Consume the semicolon if there is one,
                     // but don't add it to the item
-                    hi = Some(p.last_span.hi);
+                    hi = Some(p.prev_span.hi());
                     p.eat(&token::Semi);
                     false
                 }
-                _ => false
+                _ => false,
             };
 
             let dest = match stmt.node {
                 StmtKind::Local(..) => &mut input.statements,
-                StmtKind::Item(ref item) => {
-                    match item.node {
-                        ItemKind::ExternCrate(..) | ItemKind::Use(..) =>
-                            &mut input.view_items,
-                        _ => &mut input.items,
-                    }
+                StmtKind::Item(ref item) => match item.node {
+                    ItemKind::ExternCrate(..) | ItemKind::Use(..) => &mut input.view_items,
+                    _ => &mut input.items,
                 },
-                StmtKind::Mac(ref mac) if mac.1 == MacStmtStyle::Braces =>
-                    &mut input.items,
+                StmtKind::Mac(ref mac) if mac.1 == MacStmtStyle::Braces => &mut input.items,
                 _ => &mut input.statements,
             };
 
-            dest.push(slice(&code, lo, hi.unwrap_or(p.last_span.hi)));
+            dest.push(slice(&code, lo, hi.unwrap_or(p.prev_span.hi())));
         }
 
         input.last_expr = last_expr;
@@ -460,7 +463,7 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
     match *lock {
         ErrorState::Success => Program(rx.recv().unwrap()),
         ErrorState::Fatal => InputError(None),
-        ErrorState::NonFatal => More
+        ErrorState::NonFatal => More,
     }
 }
 
@@ -476,10 +479,9 @@ impl ErrorEmitter {
     /// to the given channel and emit non-fatal error messages to `stderr`.
     /// If `filter` is false, all errors are considered fatal.
     fn new(cm: Rc<CodeMap>, err: Arc<Mutex<ErrorState>>, filter: bool) -> ErrorEmitter {
-        ErrorEmitter{
+        ErrorEmitter {
             error: err,
-            emitter: EmitterWriter::stderr(ColorConfig::Auto, None, Some(cm),
-                FormatMode::NewErrorFormat),
+            emitter: EmitterWriter::stderr(errors::ColorConfig::Auto, None, true, false),
             filter: filter,
         }
     }
@@ -497,9 +499,9 @@ impl Emitter for ErrorEmitter {
             return;
         }
 
-        match db.level() {
+        match db.level {
             Bug | Fatal | Error => {
-                if is_non_fatal(db.message()) {
+                if is_non_fatal(&db.message()) {
                     self.set_error(ErrorState::NonFatal);
                 } else {
                     self.emitter.emit(db);
@@ -508,24 +510,23 @@ impl Emitter for ErrorEmitter {
                     self.filter = false;
                 }
             }
-            _ => ()
+            _ => (),
         }
     }
 }
 
 fn is_non_fatal(msg: &str) -> bool {
-    msg.contains("un-closed delimiter") ||
-        msg.contains("expected item after attributes") ||
-        msg.contains("unterminated block comment") ||
-        msg.contains("unterminated block doc-comment") ||
-        msg.contains("unterminated double quote string") ||
-        msg.contains("unterminated double quote byte string") ||
-        msg.contains("unterminated raw string")
+    msg.contains("un-closed delimiter") || msg.contains("expected item after attributes")
+        || msg.contains("unterminated block comment")
+        || msg.contains("unterminated block doc-comment")
+        || msg.contains("unterminated double quote string")
+        || msg.contains("unterminated double quote byte string")
+        || msg.contains("unterminated raw string")
 }
 
 #[cfg(test)]
 mod test {
-    use super::{InputResult, parse_program};
+    use super::{parse_program, InputResult};
 
     fn parse(s: &str) -> InputResult {
         parse_program(s, true, None)
