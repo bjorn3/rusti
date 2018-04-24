@@ -20,10 +20,9 @@ use std::sync::mpsc::channel;
 use std::thread::Builder;
 
 use syntax::ast::{ItemKind, MacStmtStyle, StmtKind};
-use syntax::codemap::{BytePos, CodeMap};
+use syntax::codemap::{BytePos, CodeMap, FileName};
 use syntax::errors::{ColorConfig, DiagnosticBuilder, Handler};
 use syntax::errors::emitter::{Emitter, EmitterWriter};
-use syntax::errors::snippet::FormatMode;
 use syntax::errors::Level::*;
 use syntax::parse::{classify, token};
 use syntax::parse::{filemap_to_parser, ParseSess};
@@ -357,19 +356,18 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
     let filename = filename.unwrap_or("<input>").to_owned();
     let em_err = err.clone();
 
-    let handle = task.spawn(move || {
-        if !log_enabled!(::log::LogLevel::Debug) {
-            io::set_panic(Box::new(io::sink()));
+    let handle = task.spawn(move || ::syntax::with_globals(|| {
+        if !log_enabled!(::log::Level::Debug) {
+            io::set_panic(Some(Box::new(io::sink())));
         }
         let mut input = Input::new();
-        let cm = Rc::new(CodeMap::new());
+        let cm = Rc::new(CodeMap::new(::syntax::codemap::FilePathMapping::empty()));
         let handler = Handler::with_emitter(false, false,
             Box::new(ErrorEmitter::new(cm.clone(), em_err.clone(), filter)));
         let sess = ParseSess::with_span_handler(handler, cm);
 
         let mut p = filemap_to_parser(&sess,
-            sess.codemap().new_filemap(filename, None, code.clone()),
-            Vec::new());
+            sess.codemap().new_filemap(FileName::Custom(filename), code.clone()));
 
         // Whether the last statement is an expression without a semicolon
         let mut last_expr = false;
@@ -380,12 +378,12 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
                 continue;
             }
 
-            let lo = p.span.lo;
+            let lo = p.span.lo();
 
             if p.token == token::Pound {
                 if p.look_ahead(1, |t| *t == token::Not) {
                     try_parse!(p.parse_attribute(true));
-                    input.attributes.push(slice(&code, lo, p.last_span.hi));
+                    input.attributes.push(slice(&code, lo, p.span.hi()));
                     continue;
                 }
             }
@@ -424,7 +422,7 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
                 StmtKind::Item(_) => {
                     // Consume the semicolon if there is one,
                     // but don't add it to the item
-                    hi = Some(p.last_span.hi);
+                    hi = Some(p.span.hi());
                     p.eat(&token::Semi);
                     false
                 }
@@ -445,13 +443,13 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
                 _ => &mut input.statements,
             };
 
-            dest.push(slice(&code, lo, hi.unwrap_or(p.last_span.hi)));
+            dest.push(slice(&code, lo, hi.unwrap_or(p.span.hi())));
         }
 
         input.last_expr = last_expr;
 
         tx.send(input).unwrap();
-    }).unwrap();
+    })).unwrap();
 
     let _ = handle.join();
 
@@ -478,8 +476,7 @@ impl ErrorEmitter {
     fn new(cm: Rc<CodeMap>, err: Arc<Mutex<ErrorState>>, filter: bool) -> ErrorEmitter {
         ErrorEmitter{
             error: err,
-            emitter: EmitterWriter::stderr(ColorConfig::Auto, None, Some(cm),
-                FormatMode::NewErrorFormat),
+            emitter: EmitterWriter::stderr(ColorConfig::Auto, Some(cm), false, false),
             filter: filter,
         }
     }
@@ -497,9 +494,9 @@ impl Emitter for ErrorEmitter {
             return;
         }
 
-        match db.level() {
+        match db.level {
             Bug | Fatal | Error => {
-                if is_non_fatal(db.message()) {
+                if is_non_fatal(&db.message()) {
                     self.set_error(ErrorState::NonFatal);
                 } else {
                     self.emitter.emit(db);

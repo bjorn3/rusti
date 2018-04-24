@@ -16,11 +16,11 @@ doc = false
 test = false
 
 [dependencies]
-env_logger = "0.3"
+env_logger = "0.5"
 getopts = "0.2"
-linefeed = "0.2"
-log = "0.3"
-tempfile = "1.1"
+linefeed = "0.4"
+log = "0.4"
+tempfile = "3.0"
 
 [dev-dependencies]
 assert_matches = "1.0"

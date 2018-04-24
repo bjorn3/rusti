@@ -10,12 +10,12 @@
 
 use std::env::args;
 use std::fs::File;
-use std::mem::transmute;
 use std::path::{Path, PathBuf};
 
 use rustc::ty;
 
-use syntax::{ast, codemap};
+use syntax::ast;
+use syntax::codemap::{self, FileName};
 use syntax::ast::StmtKind;
 use syntax::visit::{self, FnKind};
 
@@ -325,9 +325,13 @@ r#"#![allow(dead_code, unused_imports, unused_features)]
         if input.last_expr && !input.statements.is_empty() {
             let stmt = input.statements.last_mut().unwrap();
             if display {
-                *stmt = format!(r#"println!("{{}}", {{ {} }});"#, stmt);
+                *stmt = format!(r#"println!("{{}}", {{
+                                    {}
+                                }});"#, stmt);
             } else {
-                *stmt = format!(r#"println!("{{:?}}", {{ {} }});"#, stmt);
+                *stmt = format!(r#"println!("{{:?}}", {{
+                                    {}
+                                }});"#, stmt);
             }
         }
 
@@ -350,17 +354,7 @@ fn _rusti_inner() {{
             )
         );
 
-        if let Some(_) = self.engine.add_module(prog) {
-            let fp = self.engine.get_function(name).unwrap();
-            let f: fn() = unsafe { transmute(fp) };
-
-            f();
-
-            // NOTE: The module cannot be removed after it is run because tasks
-            // may still be running in the module code. This means that rusti's
-            // memory footprint will only grow over time.
-            // Hopefully, this will not be noticeable in normal use.
-
+        if self.engine.call_function_with_source(&prog, name) {
             // Successful compile means we can add the new items to every program
             self.attributes.extend(input.attributes.into_iter());
             self.view_items.extend(input.view_items.into_iter());
@@ -408,7 +402,7 @@ fn _rusti_inner() {{
     fn expr_type(&self, fn_name: &str, prog: String) -> Option<String> {
         let fn_name = fn_name.to_owned();
 
-        self.engine.with_analysis(prog, move |krate, tcx, _analysis| {
+        /*self.engine.with_analysis(prog, move |krate, tcx, _analysis| {
             let mut v = ExprType{
                 fn_name: fn_name,
                 result: None,
@@ -422,7 +416,8 @@ fn _rusti_inner() {{
             } else {
                 panic!("no type found");
             }
-        })
+        })*/
+        unimplemented!();
     }
 
     fn type_command(&mut self, expr: String) {
@@ -444,7 +439,7 @@ fn {name}() {{
     }
 }
 
-struct ExprType<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
+/*struct ExprType<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     fn_name: String,
     result: Option<String>,
     ty_cx: &'a ty::TyCtxt<'a, 'gcx, 'tcx>,
@@ -466,4 +461,4 @@ impl<'a, 'gcx, 'tcx> visit::Visitor for ExprType<'a, 'gcx, 'tcx> {
             }
         }
     }
-}
+}*/
