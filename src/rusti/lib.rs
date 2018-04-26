@@ -20,6 +20,7 @@ extern crate rustc_metadata;
 extern crate rustc_resolve;
 extern crate syntax;
 extern crate tempfile;
+extern crate libloading;
 
 #[macro_use] extern crate log;
 extern crate env_logger;

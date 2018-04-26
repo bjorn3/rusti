@@ -10,18 +10,23 @@
 
 use std::any::Any;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::str::from_utf8;
 use std::sync::{Arc, Mutex};
 use std::thread::Builder;
+use std::cell::RefCell;
+
+use getopts::Matches;
 
 use rustc::dep_graph::DepGraph;
 use rustc::hir::map as ast_map;
 use rustc::ty;
+use rustc::session::Session;
 use rustc::session::config::{self, basic_options, ErrorOutputType, Options, OptLevel};
-use rustc_driver::driver;
+use rustc_driver::Compilation;
+use rustc_driver::driver::CompileController;
 use rustc_metadata::cstore::CStore;
 
 use syntax::codemap::{FileName, MultiSpan};
@@ -34,6 +39,7 @@ pub struct ExecutionEngine {
     /// Additional search paths for libraries
     lib_paths: Vec<String>,
     sysroot: PathBuf,
+    counter: u64,
 }
 
 impl ExecutionEngine {
@@ -44,28 +50,84 @@ impl ExecutionEngine {
         let ee = ExecutionEngine{
             lib_paths: libs,
             sysroot: sysroot,
+            counter: 0,
         };
 
         ee
     }
 
     pub fn call_function_with_source(&mut self, source: &str, name: &str) -> bool {
+        let dylib_file = format!("./rusti_tmp_source_{}.dylib", self.counter);
+        let _ = ::std::fs::remove_file(&dylib_file);
         let mut file = ::std::fs::OpenOptions::new().write(true).create(true).truncate(true).open("rusti_tmp_source.rs").unwrap();
         writeln!(file, "{}", source).unwrap();
-        write!(file, "fn main() {{ {}(); }}", name).unwrap();
+        //write!(file, "fn main() {{ {}(); }}", name).unwrap();
         let args = &[
             //"rustc".to_string(),
+            "-L".to_string(), ".".to_string(),
             "--sysroot".to_string(),
             self.sysroot.to_str().unwrap().to_owned(),
-            "--crate-type".to_string(), "bin".to_string(),
+            "--crate-type".to_string(), "dylib".to_string(),
             "rusti_tmp_source.rs".to_string(),
+            "-o".to_string(), dylib_file.clone(),
         ];
-        println!("rustc args: {:?}", args);
+        debug!("rustc args: {:?} fn_name: {}", args, name);
         if !Command::new("rustc").args(args).status().unwrap().success() {
             return false;
         }
-        Command::new("./rusti_tmp_source").status().unwrap();
+        //Command::new("./rusti_tmp_source").status().unwrap();
+        unsafe {
+            let lib = ::libloading::Library::new(&dylib_file).unwrap();
+            {
+                let func: ::libloading::Symbol<unsafe extern fn() -> ()> = lib.get(name.as_bytes()).unwrap();
+                func();
+            }
+            // Don't unload lib, to prevent segv when for example a thread is still running.
+            ::std::mem::forget(lib);
+        }
+        self.counter += 1;
         true
+    }
+
+    pub fn with_tcx<T>(&self, prog: String, f: Box<Fn(ty::TyCtxt) -> T>) -> T {
+        struct MyFileLoader(String);
+        impl ::syntax::codemap::FileLoader for MyFileLoader {
+            fn file_exists(&self, _path: &Path) -> bool {
+                true
+            }
+            fn abs_path(&self, _path: &Path) -> Option<PathBuf> {
+                None
+            }
+            fn read_file(&self, _path: &Path) -> ::std::io::Result<String> {
+                Ok(self.0.clone())
+            }
+        }
+
+        struct MyCb<T>(Rc<Fn(ty::TyCtxt) -> T>, Rc<RefCell<Option<T>>>);
+        impl<'a, T: 'a> ::rustc_driver::CompilerCalls<'a> for MyCb<T> {
+            fn build_controller(&mut self, _: &Session, _: &Matches) -> CompileController<'a> {
+                let f = self.0.clone();
+                let res = self.1.clone();
+                let mut controller = CompileController::basic();
+                controller.after_analysis.stop = Compilation::Stop;
+                controller.after_analysis.callback = Box::new(move |state| {
+                    *res.borrow_mut() = Some(f(state.tcx.unwrap()));
+                });
+                controller
+            }
+        }
+
+        let mut cb = MyCb(f.into(), Rc::new(RefCell::new(None)));
+        let loader = MyFileLoader(prog);
+        ::rustc_driver::run_compiler(&[
+            "rustc".to_string(),
+            "dummy_name".to_string(),
+            "--crate-type".to_string(), "lib".to_string(),
+            "--sysroot".to_string(),
+            self.sysroot.to_str().unwrap().to_owned(),
+        ], &mut cb, Some(Box::new(loader)), None);
+        let ret = cb.1.borrow_mut().take().unwrap();
+        ret
     }
 }
 

@@ -13,11 +13,11 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use rustc::ty;
+use rustc::hir;
 
 use syntax::ast;
 use syntax::codemap::{self, FileName};
 use syntax::ast::StmtKind;
-use syntax::visit::{self, FnKind};
 
 use exec::ExecutionEngine;
 use input::{parse_command, parse_program};
@@ -326,12 +326,12 @@ r#"#![allow(dead_code, unused_imports, unused_features)]
             let stmt = input.statements.last_mut().unwrap();
             if display {
                 *stmt = format!(r#"println!("{{}}", {{
-                                    {}
-                                }});"#, stmt);
+    {}
+}});"#, stmt);
             } else {
                 *stmt = format!(r#"println!("{{:?}}", {{
-                                    {}
-                                }});"#, stmt);
+    {}
+}});"#, stmt);
             }
         }
 
@@ -399,25 +399,24 @@ fn _rusti_inner() {{
         }
     }
 
-    fn expr_type(&self, fn_name: &str, prog: String) -> Option<String> {
+    fn expr_type(&self, fn_name: &str, prog: String) -> String {
         let fn_name = fn_name.to_owned();
 
-        /*self.engine.with_analysis(prog, move |krate, tcx, _analysis| {
+        self.engine.with_tcx(prog, Box::new(move |tcx| {
             let mut v = ExprType{
-                fn_name: fn_name,
+                fn_name: fn_name.clone(),
                 result: None,
-                ty_cx: tcx,
+                tcx: tcx,
             };
 
-            visit::walk_crate(&mut v, krate);
+            tcx.hir.krate().visit_all_item_likes(&mut v);
 
             if let Some(ty) = v.result {
-                ty
+                format!("{:?}", ty)
             } else {
                 panic!("no type found");
             }
-        })*/
-        unimplemented!();
+        }))
     }
 
     fn type_command(&mut self, expr: String) {
@@ -433,32 +432,39 @@ fn {name}() {{
         , expr = expr
         ));
 
-        if let Some(t) = self.expr_type(name, prog) {
-            println!("{} = {}", expr, t);
-        }
+        println!("{} = {}", expr, self.expr_type(name, prog));
     }
 }
 
-/*struct ExprType<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
+struct ExprType<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     fn_name: String,
     result: Option<String>,
-    ty_cx: &'a ty::TyCtxt<'a, 'gcx, 'tcx>,
+    tcx: ty::TyCtxt<'a, 'gcx, 'tcx>,
 }
 
-impl<'a, 'gcx, 'tcx> visit::Visitor for ExprType<'a, 'gcx, 'tcx> {
-    fn visit_fn(&mut self, fk: visit::FnKind, _fd: &ast::FnDecl,
-            b: &ast::Block, _s: codemap::Span, _n: ast::NodeId) {
-        if let FnKind::ItemFn(ident, _, _, _, _, _) = fk {
-            if &*ident.name.as_str() == self.fn_name {
-                if let Some(ref stmt) = b.stmts.last() {
-                    if let StmtKind::Semi(ref expr) = stmt.node {
-                        let id = expr.id;
-                        if let Some(ty) = self.ty_cx.node_types().get(&id) {
-                            self.result = Some(format!("{:?}", ty));
-                        }
+impl<'a, 'gcx, 'tcx> hir::itemlikevisit::ItemLikeVisitor<'a> for ExprType<'a, 'gcx, 'tcx> {
+    fn visit_item(&mut self, item: &'a hir::Item) {
+        if let hir::Item_::ItemFn(_, _, _, _, _, body_id) = item.node {
+            if &*item.name.as_str() != self.fn_name {
+                return;
+            }
+            let body = self.tcx.hir.body(body_id);
+            let body_tables = self.tcx.body_tables(body_id);
+            let b = match body.value.node {
+                hir::Expr_::ExprBlock(ref block) => block,
+                ref node => panic!("{:?}", node),
+            };
+            if let Some(ref stmt) = b.stmts.last() {
+                if let hir::Stmt_::StmtSemi(ref expr, _) = stmt.node {
+                    if let Some(ty) = body_tables.node_types().get(expr.hir_id) {
+                        self.result = Some(format!("{:?}", ty));
                     }
                 }
             }
         }
     }
-}*/
+
+    fn visit_trait_item(&mut self, _item: &'a hir::TraitItem) {}
+
+    fn visit_impl_item(&mut self, _item: &'a hir::ImplItem) {}
+}
