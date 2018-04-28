@@ -19,13 +19,17 @@ use std::sync::{Arc, Mutex};
 use std::sync::mpsc::channel;
 use std::thread::Builder;
 
-use syntax::ast::{ItemKind, MacStmtStyle, StmtKind};
-use syntax::codemap::{BytePos, CodeMap, FileName};
+use syntax::ptr::P;
+use syntax::ast::{MetaItem, MetaItemKind, MacStmtStyle, StmtKind, VisibilityKind, Ident};
+//use syntax::attr::{mk_attr_id, mk_attr_inner};
+use syntax::codemap::{DUMMY_SP, Spanned, BytePos, CodeMap, FileName};
 use syntax::errors::{ColorConfig, DiagnosticBuilder, Handler};
 use syntax::errors::emitter::{Emitter, EmitterWriter};
 use syntax::errors::Level::*;
 use syntax::parse::{classify, token};
 use syntax::parse::{filemap_to_parser, ParseSess};
+use syntax::parse::token::{Token, Nonterminal, LazyTokenStream};
+use syntax::tokenstream::TokenStream;
 
 use linefeed::{Reader, ReadResult};
 use linefeed::terminal::DefaultTerminal;
@@ -253,8 +257,6 @@ enum ErrorState {
 pub struct Input {
     /// Module attributes
     pub attributes: Vec<String>,
-    /// Module-level view items (`use`, `extern crate`)
-    pub view_items: Vec<String>,
     /// Module-level items (`fn`, `enum`, `type`, `struct`, etc.)
     pub items: Vec<String>,
     /// Inner statements and declarations
@@ -268,7 +270,6 @@ impl Input {
     pub fn new() -> Input {
         Input{
             attributes: Vec::new(),
-            view_items: Vec::new(),
             items: Vec::new(),
             statements: Vec::new(),
             last_expr: false,
@@ -352,6 +353,12 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
         s[lo.0 as usize .. hi.0 as usize].to_owned()
     }
 
+    macro_rules! nt_to_string {
+        ($nt: expr) => {
+            TokenStream::from(Token::Interpolated(($nt, LazyTokenStream::new()).into())).to_string()
+        }
+    }
+
     let code = code.to_owned();
     let filename = filename.unwrap_or("<input>").to_owned();
     let em_err = err.clone();
@@ -382,7 +389,8 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
 
             if p.token == token::Pound {
                 if p.look_ahead(1, |t| *t == token::Not) {
-                    try_parse!(p.parse_attribute(true));
+                    /*let attr = */try_parse!(p.parse_attribute(true));
+                    //input.attributes.push(nt_to_string!(Nonterminal::NtMeta(attr.meta().unwrap())));
                     input.attributes.push(slice(&code, lo, p.span.hi()));
                     continue;
                 }
@@ -400,8 +408,6 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
                     return;
                 }
             }
-
-            let mut hi = None;
 
             last_expr = match stmt.node {
                 StmtKind::Expr(ref e) => {
@@ -422,28 +428,25 @@ pub fn parse_program(code: &str, filter: bool, filename: Option<&str>) -> InputR
                 StmtKind::Item(_) => {
                     // Consume the semicolon if there is one,
                     // but don't add it to the item
-                    hi = Some(p.span.hi());
                     p.eat(&token::Semi);
                     false
                 }
                 _ => false
             };
 
-            let dest = match stmt.node {
-                StmtKind::Local(..) => &mut input.statements,
+            match stmt.node {
                 StmtKind::Item(ref item) => {
-                    match item.node {
-                        ItemKind::ExternCrate(..) | ItemKind::Use(..) =>
-                            &mut input.view_items,
-                        _ => &mut input.items,
-                    }
+                    let mut item = (&**item).clone();
+                    item.vis = Spanned { node: VisibilityKind::Public, span: DUMMY_SP };
+                    input.items.push(nt_to_string!(Nonterminal::NtItem(P(item))));
                 },
-                StmtKind::Mac(ref mac) if mac.1 == MacStmtStyle::Braces =>
-                    &mut input.items,
-                _ => &mut input.statements,
-            };
-
-            dest.push(slice(&code, lo, hi.unwrap_or(p.span.hi())));
+                StmtKind::Mac(ref mac) if mac.1 == MacStmtStyle::Braces => {
+                    input.items.push(nt_to_string!(Nonterminal::NtStmt(stmt.clone())));
+                }
+                _ => {
+                    input.statements.push(nt_to_string!(Nonterminal::NtStmt(stmt)));
+                }
+            }
         }
 
         input.last_expr = last_expr;

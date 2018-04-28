@@ -80,15 +80,12 @@ static COMMANDS: &'static [CommandDef] = &[
 pub struct Repl {
     /// First entry of `env::args`
     argv0: String,
+
     engine: ExecutionEngine,
+
     /// Module-level attributes applied to every program
     attributes: Vec<String>,
-    /// View items compiled into every program
-    view_items: Vec<String>,
-    /// Items compiled into every program
-    /// TODO: When type/def-injection is implemented,
-    /// it will not be necessary to re-compile all functions on every input.
-    items: Vec<String>,
+
     /// true if the next input should be a block
     read_block: bool,
 }
@@ -129,8 +126,6 @@ impl Repl {
             argv0: argv0,
             engine: ExecutionEngine::new(libs, sysroot),
             attributes: Vec::new(),
-            view_items: Vec::new(),
-            items: Vec::new(),
             read_block: false,
         }
     }
@@ -238,46 +233,30 @@ impl Repl {
     /// optionally, those from an `Input` instance. The `statements` field of
     /// `input` will be ignored.
     fn build_program(&self, input: Option<&Input>, program: &str) -> String {
-        let (attrs, vitems, items) = if let Some(input) = input {
+        let (attrs, items) = if let Some(input) = input {
             let attrs = self.attributes.iter().map(|s| &s[..])
                 .chain(input.attributes.iter().map(|s| &s[..]))
                 .collect::<Vec<_>>();
 
-            let vitems = self.view_items.iter().map(|s| &s[..])
-                .chain(input.view_items.iter().map(|s| &s[..]))
-                .collect::<Vec<_>>();
+            let items = input.items.iter().map(|s| &s[..]).collect::<Vec<_>>();
 
-            let items = self.items.iter().map(|s| &s[..])
-                .chain(input.items.iter().map(|s| &s[..]))
-                .collect::<Vec<_>>();
-
-            (attrs, vitems, items)
+            (attrs, items)
         } else {
             let attrs = self.attributes.iter().map(|s| &s[..])
                 .collect::<Vec<_>>();
 
-            let vitems = self.view_items.iter().map(|s| &s[..])
-                .collect::<Vec<_>>();
-
-            let items = self.items.iter().map(|s| &s[..])
-                .collect::<Vec<_>>();
-
-            (attrs, vitems, items)
+            (attrs, vec![])
         };
 
         let attrs = attrs.join("\n");
-        let vitems = vitems.join("\n");
         let items = items.join("\n");
 
         format!(
-r#"#![allow(dead_code, unused_imports, unused_features)]
-{attrs}
-{vitems}
+r#"{attrs}
 {items}
 {program}
 "#
         , attrs = attrs
-        , vitems = vitems
         , items = items
         , program = program)
     }
@@ -341,7 +320,7 @@ r#"#![allow(dead_code, unused_imports, unused_features)]
             &format!(
 r#"
 #[no_mangle]
-pub fn {name}() {{
+pub extern "C" fn {name}() {{
     let _ = std::panic::catch_unwind(_rusti_inner);
 }}
 
@@ -357,8 +336,6 @@ fn _rusti_inner() {{
         if self.engine.call_function_with_source(&prog, name) {
             // Successful compile means we can add the new items to every program
             self.attributes.extend(input.attributes.into_iter());
-            self.view_items.extend(input.view_items.into_iter());
-            self.items.extend(input.items.into_iter());
         }
     }
 
